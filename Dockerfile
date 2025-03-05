@@ -31,13 +31,11 @@ RUN python3 -m pip install -U \
     pytest-repeat \
     pytest-rerunfailures
 
-VOLUME [ "/root/output" ]
+VOLUME [ "/root/ros2_humble" ]
 
-RUN mkdir -p /root/ros2_humble/src
-WORKDIR /root/ros2_humble
-COPY build.sh /root/ros2_humble/build.sh
-COPY humble-ros-core.rosinstall /root/ros2_humble/humble-ros-core.rosinstall
+COPY build.sh /root/build.sh
+COPY humble-ros-core.rosinstall /root/humble-ros-core.rosinstall
 
-RUN chmod +x ./build.sh
+RUN chmod +x /root/build.sh
 
-CMD ["./build.sh"]
+CMD ["/root/build.sh"]
