@@ -2,8 +2,11 @@
 FROM ubuntu:20.04
 
 # Set environment variables to avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Etc/UTC
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Etc/UTC \
+    LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    LC_ALL=en_US.UTF-8
 
 # Install basic tools and dependencies for cross-compilation and ROS2 build
 RUN apt-get update && apt-get install -y \
@@ -26,9 +29,6 @@ RUN apt-get update && apt-get install -y \
 
 # Set up locales (needed for some ROS2 tools)
 RUN locale-gen en_US.UTF-8
-ENV LANG en_US.UTF-8
-ENV LANGUAGE en_US:en
-ENV LC_ALL en_US.UTF-8
 
 # Install Python tools for ROS2
 RUN python3 -m pip install --upgrade pip && \
@@ -41,28 +41,39 @@ RUN python3 -m pip install --upgrade pip && \
 # Enable QEMU for ARM64 emulation
 RUN update-binfmts --enable qemu-aarch64
 
-# Create a sysroot for Ubuntu 20.04 ARM64
+# Create a sysroot for Ubuntu 20.04 ARM64 with verbose output and error checking
+# Note: The architecture is "arm64" in Ubuntu repositories, not "aarch64"
 RUN mkdir -p /sysroot && \
-    debootstrap --arch=aarch64 focal /sysroot http://ports.ubuntu.com/
+    debootstrap --verbose --arch=arm64 --foreign focal /sysroot http://ports.ubuntu.com/ || { echo "debootstrap first stage failed"; ls -la /sysroot; exit 1; } && \
+    cp /usr/bin/qemu-aarch64-static /sysroot/usr/bin/ && \
+    chroot /sysroot /debootstrap/debootstrap --second-stage || { echo "debootstrap second stage failed"; ls -la /sysroot; exit 1; }
+
+# Verify sysroot and set up the sources.list manually
+RUN mkdir -p /sysroot/etc/apt && \
+    echo "deb http://ports.ubuntu.com/ focal main restricted universe multiverse" > /sysroot/etc/apt/sources.list && \
+    echo "deb http://ports.ubuntu.com/ focal-updates main restricted universe multiverse" >> /sysroot/etc/apt/sources.list && \
+    echo "deb http://ports.ubuntu.com/ focal-security main restricted universe multiverse" >> /sysroot/etc/apt/sources.list
 
 # Install additional dependencies in the sysroot (chroot into sysroot and install)
-RUN echo "deb http://ports.ubuntu.com/ focal main restricted universe multiverse" > /sysroot/etc/apt/sources.list && \
-    echo "deb http://ports.Ubuntu.com/ focal-updates main restricted universe multiverse" >> /sysroot/etc/apt/sources.list && \
-    echo "deb http://ports.Ubuntu.com/ focal-security main restricted universe multiverse" >> /sysroot/etc/apt/sources.list && \
-    chroot /sysroot /bin/bash -c "apt-get update && apt-get install -y \
+RUN chroot /sysroot /bin/bash -c "apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
     python3 \
     python3-pip \
     libpython3-dev \
+    libacl1-dev \
     && rm -rf /var/lib/apt/lists/*"
+
+# Verify that sys/acl.h exists in the sysroot
+RUN ls -l /sysroot/usr/include/sys/acl.h || { echo "sys/acl.h not found in sysroot"; exit 1; }
 
 # Create a CMake toolchain file for cross-compilation
 RUN echo "set(CMAKE_SYSTEM_NAME Linux)" > /toolchain.cmake && \
     echo "set(CMAKE_SYSTEM_PROCESSOR aarch64)" >> /toolchain.cmake && \
     echo "set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc)" >> /toolchain.cmake && \
     echo "set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++)" >> /toolchain.cmake && \
+    echo "set(CMAKE_SYSROOT /sysroot)" >> /toolchain.cmake && \
     echo "set(CMAKE_FIND_ROOT_PATH /sysroot)" >> /toolchain.cmake && \
     echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> /toolchain.cmake && \
     echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> /toolchain.cmake && \
@@ -84,7 +95,7 @@ RUN rosdep init || true && \
 RUN rosdep install --from-paths src --ignore-src --rosdistro humble -y --os=ubuntu:focal \
     --sysroot /sysroot || true
 
-# Build ROS2 Humble with colcon for ARM64
+# Build ROS2 Humble with colcon
 RUN colcon build \
     --merge-install \
     --cmake-force-configure \
@@ -93,8 +104,8 @@ RUN colcon build \
     -DCMAKE_VERBOSE_MAKEFILE=ON
 
 # Set up the environment for running ROS2 (optional, for testing in container)
-ENV ROS_DISTRO=humble
-ENV ROS_ROOT=/ros2_humble/install
+ENV ROS_DISTRO=humble \
+    ROS_ROOT=/ros2_humble/install
 RUN echo "source /ros2_humble/install/setup.bash" >> /root/.bashrc
 
 # Define an entrypoint (optional, for debugging or running commands)
