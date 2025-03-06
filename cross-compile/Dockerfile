@@ -1,112 +1,103 @@
-# Use Ubuntu 20.04 as the base image for the Docker container
-FROM ubuntu:20.04
+# Use an Ubuntu 22.04 base image for x86 as the host
+FROM ubuntu:22.04 AS builder
 
-# Set environment variables to avoid interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive \
-    TZ=Etc/UTC \
-    LANG=en_US.UTF-8 \
-    LANGUAGE=en_US:en \
-    LC_ALL=en_US.UTF-8
+# Set environment variables to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install basic tools and dependencies for cross-compilation and ROS2 build
+# Install basic tools and dependencies on the host
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
     wget \
-    curl \
-    python3 \
     python3-pip \
-    python3-dev \
-    python3-venv \
-    gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu \
-    debootstrap \
+    pkg-config \
     qemu-user-static \
+    debootstrap \
     binfmt-support \
-    locales \
+    crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up locales (needed for some ROS2 tools)
-RUN locale-gen en_US.UTF-8
-
 # Install Python tools for ROS2
-RUN python3 -m pip install --upgrade pip && \
-    pip install \
-    colcon-common-extensions \
-    vcstool \
-    rosdep \
-    setuptools
+RUN pip3 install --no-cache-dir vcstool colcon-common-extensions
 
-# Enable QEMU for ARM64 emulation
-RUN update-binfmts --enable qemu-aarch64
+# Create a sysroot for aarch64 using debootstrap with complete Ubuntu 20.04 (focal)
+RUN debootstrap --arch=arm64 --variant=minbase --include=libc6-dev,gcc,g++,python3,python3-dev,libpython3-dev,cmake,pkg-config,build-essential,git \
+    focal /sysroot http://ports.ubuntu.com/ubuntu-ports
 
-# Create a sysroot for Ubuntu 20.04 ARM64 with verbose output and error checking
-# Note: The architecture is "arm64" in Ubuntu repositories, not "aarch64"
-RUN mkdir -p /sysroot && \
-    debootstrap --verbose --arch=arm64 --foreign focal /sysroot http://ports.ubuntu.com/ || { echo "debootstrap first stage failed"; ls -la /sysroot; exit 1; } && \
-    cp /usr/bin/qemu-aarch64-static /sysroot/usr/bin/ && \
-    chroot /sysroot /debootstrap/debootstrap --second-stage || { echo "debootstrap second stage failed"; ls -la /sysroot; exit 1; }
+# Set up QEMU for aarch64 emulation
+RUN cp /usr/bin/qemu-aarch64-static /sysroot/usr/bin/
+RUN chroot /sysroot /bin/bash -c "apt-get update"
 
-# Verify sysroot and set up the sources.list manually
-RUN mkdir -p /sysroot/etc/apt && \
-    echo "deb http://ports.ubuntu.com/ focal main restricted universe multiverse" > /sysroot/etc/apt/sources.list && \
-    echo "deb http://ports.ubuntu.com/ focal-updates main restricted universe multiverse" >> /sysroot/etc/apt/sources.list && \
-    echo "deb http://ports.ubuntu.com/ focal-security main restricted universe multiverse" >> /sysroot/etc/apt/sources.list
+# Configure repositories for the sysroot
+RUN echo "deb http://ports.ubuntu.com/ubuntu-ports focal main restricted universe multiverse" > /sysroot/etc/apt/sources.list && \
+    echo "deb http://ports.ubuntu.com/ubuntu-ports focal-updates main restricted universe multiverse" >> /sysroot/etc/apt/sources.list && \
+    echo "deb http://ports.ubuntu.com/ubuntu-ports focal-security main restricted universe multiverse" >> /sysroot/etc/apt/sources.list
 
-# Install additional dependencies in the sysroot (chroot into sysroot and install)
-RUN chroot /sysroot /bin/bash -c "apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    git \
-    python3 \
+# Install essential development packages in the sysroot
+RUN chroot /sysroot apt-get update && \
+    chroot /sysroot apt-get install -y \
     python3-pip \
-    libpython3-dev \
+    python3-dev \
     libacl1-dev \
-    && rm -rf /var/lib/apt/lists/*"
+    libssl-dev \
+    libtinyxml2-dev \
+    libasio-dev \
+    libtinyxml-dev \
+    libcunit1-dev \
+    libncurses5-dev \
+    libacl1-dev \
+    acl \
+    libc6-dev \
+    linux-libc-dev \
+    libc-dev-bin \
+    libgcc-9-dev \
+    libssl-dev \
+    gcc-9 \
+    g++-9 \
+    libc-dev \
+    && \
+    chroot /sysroot pip3 install colcon-common-extensions && \
+    chroot /sysroot apt-get clean
 
-# Verify that sys/acl.h exists in the sysroot
-RUN ls -l /sysroot/usr/include/sys/acl.h || { echo "sys/acl.h not found in sysroot"; exit 1; }
-
-# Create a CMake toolchain file for cross-compilation
-RUN echo "set(CMAKE_SYSTEM_NAME Linux)" > /toolchain.cmake && \
-    echo "set(CMAKE_SYSTEM_PROCESSOR aarch64)" >> /toolchain.cmake && \
-    echo "set(CMAKE_C_COMPILER /usr/bin/aarch64-linux-gnu-gcc)" >> /toolchain.cmake && \
-    echo "set(CMAKE_CXX_COMPILER /usr/bin/aarch64-linux-gnu-g++)" >> /toolchain.cmake && \
-    echo "set(CMAKE_SYSROOT /sysroot)" >> /toolchain.cmake && \
-    echo "set(CMAKE_FIND_ROOT_PATH /sysroot)" >> /toolchain.cmake && \
-    echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> /toolchain.cmake && \
-    echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> /toolchain.cmake && \
-    echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> /toolchain.cmake
-
-# Set up a working directory for ROS2 source and build
+# Set up the ROS2 workspace
 WORKDIR /ros2_humble
+COPY ./ros2.repos ./ros2.repos
+RUN mkdir -p src && \
+    vcs import src < ros2.repos && \
+    rm ros2.repos
 
-# Download the ROS2 Humble source code using the repos file
-RUN wget https://raw.githubusercontent.com/ros2/ros2/humble/ros2.repos && \
-    mkdir src && \
-    vcs import src < ros2.repos
+# Create the CMake toolchain file for aarch64
+RUN echo "set(CMAKE_SYSTEM_NAME Linux)" > /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_SYSTEM_PROCESSOR aarch64)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_C_COMPILER aarch64-linux-gnu-gcc)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_CXX_COMPILER aarch64-linux-gnu-g++)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_FIND_ROOT_PATH /sysroot)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_C_FLAGS \"-march=armv8-a -I/sysroot/usr/include -I/sysroot/usr/include/aarch64-linux-gnu\" CACHE STRING \"c flags\")" >> /aarch64.toolchain.cmake && \
+    echo "set(CMAKE_CXX_FLAGS \"-march=armv8-a -I/sysroot/usr/include -I/sysroot/usr/include/aarch64-linux-gnu\" CACHE STRING \"c++ flags\")" >> /aarch64.toolchain.cmake
 
-# Initialize rosdep and update it
-RUN rosdep init || true && \
-    rosdep update
+# Set environment variables for cross-compilation
+ENV CC=/usr/bin/aarch64-linux-gnu-gcc
+ENV CXX=/usr/bin/aarch64-linux-gnu-g++
+ENV PKG_CONFIG_PATH=/sysroot/usr/lib/aarch64-linux-gnu/pkgconfig
+ENV CFLAGS="-I/sysroot/usr/include -I/sysroot/usr/include/aarch64-linux-gnu"
+ENV CXXFLAGS="-I/sysroot/usr/include -I/sysroot/usr/include/aarch64-linux-gnu"
 
-# Install ROS2 dependencies using rosdep (targeting the sysroot)
-RUN rosdep install --from-paths src --ignore-src --rosdistro humble -y --os=ubuntu:focal \
-    --sysroot /sysroot || true
+# Modify the iceoryx package to work with cross-compilation (if needed)
+# Skip iceoryx for now to avoid compilation issues
+RUN touch /ros2_humble/src/iceoryx/COLCON_IGNORE
 
-# Build ROS2 Humble with colcon
-RUN colcon build \
-    --merge-install \
-    --cmake-force-configure \
-    --cmake-args \
-    -DCMAKE_TOOLCHAIN_FILE=/toolchain.cmake \
-    -DCMAKE_VERBOSE_MAKEFILE=ON
+# Build ROS2 Humble with reduced dependencies
+RUN colcon build --merge-install --cmake-force-configure \
+    --cmake-args -DCMAKE_TOOLCHAIN_FILE=/aarch64.toolchain.cmake \
+    -DBUILD_TESTING=OFF \
+    -DCMAKE_CXX_STANDARD=17 \
+    -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+    -DTHIRDPARTY_Asio=ON \
+    -DTHIRDPARTY=ON \
+    --no-warn-unused-cli
 
-# Set up the environment for running ROS2 (optional, for testing in container)
-ENV ROS_DISTRO=humble \
-    ROS_ROOT=/ros2_humble/install
-RUN echo "source /ros2_humble/install/setup.bash" >> /root/.bashrc
-
-# Define an entrypoint (optional, for debugging or running commands)
-CMD ["/bin/bash"]
+CMD ["bash"]
