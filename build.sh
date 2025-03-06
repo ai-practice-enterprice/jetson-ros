@@ -26,5 +26,4 @@ fi
 colcon build
 
 # Package the build
-rm -r src
 tar -czf ./ros2Humble.tar.gz .
