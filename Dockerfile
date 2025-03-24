@@ -17,7 +17,9 @@ RUN apt update && apt install -y \
     python3-flake8-docstrings \
     python3-pip \
     python3-pytest-cov \
-    ros-dev-tools
+    ros-dev-tools \
+    libacl1-dev \
+    libncurses5-dev
 
 RUN python3 -m pip install -U \
     flake8-blind-except \
@@ -31,11 +33,14 @@ RUN python3 -m pip install -U \
     pytest-repeat \
     pytest-rerunfailures
 
+RUN apt install -y libtinyxml2-dev
+
 VOLUME [ "/root/ros2_humble" ]
 
 COPY build.sh /root/build.sh
-COPY humble-ros-core.rosinstall /root/humble-ros-core.rosinstall
+COPY packages.txt /root/packages.txt
 
 RUN chmod +x /root/build.sh
+RUN pip install rosinstall-generator
 
 CMD ["/root/build.sh"]
