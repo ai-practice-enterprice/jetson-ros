@@ -34,4 +34,4 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Package the build
 rm -r src
-tar -czf ./ros2Humble.tar.gz ./install
+tar --transform='s,^install,humble,' -czf ./ros2Humble.tar.gz ./install
