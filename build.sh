@@ -30,7 +30,7 @@ apt update
 rosdep install --from-paths src --ignore-src -y --skip-keys "fastcdr rti-connext-dds-6.0.1 urdfdom_headers"
 
 # Build ROS2
-colcon build
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # Package the build
 rm -r src
