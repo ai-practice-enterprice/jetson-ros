@@ -3,3 +3,4 @@ joy
 cv_bridge
 teleop_twist_joy
 twist_mux
+vision_msgs
